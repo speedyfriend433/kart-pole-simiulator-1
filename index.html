@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Chain-Pole Self-Training Simulation with Episode Reset & Trajectories</title>
+  <title>Chain-Pole Self-Training Simulation with Episode Reset & Trajectories (Ground Contact Termination)</title>
   <!-- Load TensorFlow.js -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
   <style>
@@ -71,10 +71,13 @@
      * ChainPoleSimulator Class
      *
      * This simulator models a cart with a chain of pendulums
-     * (stacked one above the other). The dynamics are computed
-     * approximately using a cascading equation. Zero angle means
-     * vertical. In addition, this class maintains a trail (trajectory)
-     * for each link’s tip.
+     * (stacked one above the other) using a cascade formulation.
+     * In this version, the termination condition checks the canvas
+     * y-coordinate of each link's tip. If any tip touches or falls
+     * near the ground (defined by the simulator's groundY), the
+     * episode immediately ends, triggering a training update.
+     *
+     * The simulation also records a trail (trajectory) for each link's tip.
      *******************************************************/
     class ChainPoleSimulator {
       constructor(canvas, numPoles = 3) {
@@ -87,24 +90,24 @@
         this.dt = 0.02;           // time step in seconds
         this.massCart = 1.0;      // mass of the cart
         this.massPole = 0.1;      // mass for each link (for inertia estimation)
-        this.L = 1.0;             // link length [m]
+        this.L = 1.0;             // link length in meters
         
         // Our state is [x, x_dot, theta1, theta1_dot, theta2, theta2_dot, ...]
         this.state = new Float32Array(2 + 2 * this.numPoles);
         this.reset();
         
-        // Termination thresholds
+        // Termination thresholds:
         this.xThreshold = 2.4;
-        this.thetaThreshold = 15 * Math.PI / 180;  // 15° in radians
+        // Instead of using an angular threshold, we terminate when a link touches ground.
         
         // Graphics parameters
         this.scale = 100;         // pixels per meter
         this.cartWidth = 0.8 * this.scale;
         this.cartHeight = 0.4 * this.scale;
-        this.groundY = this.canvas.height - 100;
+        this.groundY = this.canvas.height - 100;  // Ground level
         
         // For trajectory tracking, maintain an array of trails for each link.
-        this.maxTrailLength = 100;  // maximum points to store per trail
+        this.maxTrailLength = 100;  // Maximum number of points per trail
         this.initializeTrails();
       }
       
@@ -116,10 +119,10 @@
       }
       
       reset() {
-        // Reset cart state.
+        // Reset cart position and velocity.
         this.state[0] = 0;  // x position.
         this.state[1] = 0;  // x velocity.
-        // For each link, set a small noise around zero.
+        // Reset each link with small noise so that angles are nearly vertical.
         for (let i = 0; i < this.numPoles; i++) {
           this.state[2 + 2*i] = (Math.random() - 0.5) * 0.05;  // theta (radians)
           this.state[3 + 2*i] = (Math.random() - 0.5) * 0.05;  // angular velocity.
@@ -127,72 +130,24 @@
         this.initializeTrails();
       }
       
+      // Termination occurs if:
+      //   1. The cart leaves bounds
+      //   2. OR any link's tip position is at or below a threshold near the ground.
       isTerminal() {
         if (Math.abs(this.state[0]) > this.xThreshold) return true;
-        for (let i = 0; i < this.numPoles; i++) {
-          if (Math.abs(this.state[2 + 2*i]) > this.thetaThreshold) return true;
+        const tips = this.getLinkTipCoordinates();
+        for (let tip of tips) {
+          // If a tip's y-coordinate is greater than (i.e. lower than) ground level minus a small margin,
+          // consider that as having touched the ground.
+          if (tip.y >= this.groundY - 10) return true;
         }
         return false;
       }
       
-      // Compute derivatives for chain dynamics.
-      computeDerivatives(state, force) {
-        const deriv = new Float32Array(state.length);
-        // Cart dynamics:
-        deriv[0] = state[1];
-        const totalMass = this.massCart + this.numPoles * this.massPole;
-        const x_ddot = force / totalMass;
-        deriv[1] = x_ddot;
-        
-        // Cascading dynamics for each link.
-        let a_eff = x_ddot;  // For the first link, effective acceleration equals the cart's.
-        for (let i = 0; i < this.numPoles; i++) {
-          const idx = 2 + 2*i;
-          const theta = state[idx];
-          const theta_dot = state[idx+1];
-          deriv[idx] = theta_dot;
-          const theta_ddot = - (this.gravity / this.L) * Math.sin(theta)
-                             - (a_eff / this.L) * Math.cos(theta);
-          deriv[idx+1] = theta_ddot;
-          // Update effective acceleration for the next link.
-          a_eff = a_eff + this.L * theta_ddot * Math.cos(theta) - this.L * theta_dot * theta_dot * Math.sin(theta);
-        }
-        return deriv;
-      }
-      
-      // Perform a single RK4 integration step.
-      rk4Step(force) {
-        const dt = this.dt;
-        const s = this.state;
-        const k1 = this.computeDerivatives(s, force);
-        const s2 = vectorAdd(s, vectorScale(k1, dt/2));
-        const k2 = this.computeDerivatives(s2, force);
-        const s3 = vectorAdd(s, vectorScale(k2, dt/2));
-        const k3 = this.computeDerivatives(s3, force);
-        const s4 = vectorAdd(s, vectorScale(k3, dt));
-        const k4 = this.computeDerivatives(s4, force);
-        const incr = vectorScale(vectorAddMultiple(k1, vectorScale(k2, 2), vectorScale(k3, 2), k4), dt/6);
-        this.state = vectorAdd(s, incr);
-      }
-      
-      // Update simulation over elapsed time in milliseconds.
-      update(force, elapsedTime) {
-        const steps = Math.floor(elapsedTime / (this.dt * 1000));
-        for (let i = 0; i < steps; i++) {
-          this.rk4Step(force);
-          // Update trails after each simulation step.
-          this.updateTrails();
-          if (this.isTerminal()) {
-            // When termination is reached, reset.
-            this.reset();
-            break;
-          }
-        }
-      }
-      
-      // Compute the tip positions for each link (in canvas pixel coordinates).
+      // Compute the tip positions (in canvas pixels) for each link in the chain.
       getLinkTipCoordinates() {
-        const cartX = this.canvas.width/2 + this.state[0] * this.scale;
+        // Start from the cart's top center.
+        const cartX = this.canvas.width / 2 + this.state[0] * this.scale;
         const cartY = this.groundY;
         let baseX = cartX;
         let baseY = cartY - this.cartHeight;
@@ -209,7 +164,59 @@
         return tips;
       }
       
-      // Update the trajectory trails for each link.
+      // Compute the derivatives for chain dynamics.
+      computeDerivatives(state, force) {
+        const deriv = new Float32Array(state.length);
+        // Cart dynamics:
+        deriv[0] = state[1];
+        const totalMass = this.massCart + this.numPoles * this.massPole;
+        const x_ddot = force / totalMass;
+        deriv[1] = x_ddot;
+        
+        // Cascading dynamics for each link.
+        let a_eff = x_ddot;  // Effective acceleration starts as the cart's acceleration.
+        for (let i = 0; i < this.numPoles; i++) {
+          const idx = 2 + 2*i;
+          const theta = state[idx];
+          const theta_dot = state[idx+1];
+          deriv[idx] = theta_dot;
+          const theta_ddot = - (this.gravity / this.L) * Math.sin(theta)
+                             - (a_eff / this.L) * Math.cos(theta);
+          deriv[idx+1] = theta_ddot;
+          a_eff = a_eff + this.L * theta_ddot * Math.cos(theta) - this.L * theta_dot * theta_dot * Math.sin(theta);
+        }
+        return deriv;
+      }
+      
+      // Perform one RK4 integration step.
+      rk4Step(force) {
+        const dt = this.dt;
+        const s = this.state;
+        const k1 = this.computeDerivatives(s, force);
+        const s2 = vectorAdd(s, vectorScale(k1, dt/2));
+        const k2 = this.computeDerivatives(s2, force);
+        const s3 = vectorAdd(s, vectorScale(k2, dt/2));
+        const k3 = this.computeDerivatives(s3, force);
+        const s4 = vectorAdd(s, vectorScale(k3, dt));
+        const k4 = this.computeDerivatives(s4, force);
+        const incr = vectorScale(vectorAddMultiple(k1, vectorScale(k2, 2), vectorScale(k3, 2), k4), dt/6);
+        this.state = vectorAdd(s, incr);
+      }
+      
+      // Update simulation over elapsed time (in milliseconds) and update the trails.
+      update(force, elapsedTime) {
+        const steps = Math.floor(elapsedTime / (this.dt * 1000));
+        for (let i = 0; i < steps; i++) {
+          this.rk4Step(force);
+          this.updateTrails();
+          if (this.isTerminal()) {
+            // When termination is reached, break out so that the reset can occur.
+            break;
+          }
+        }
+      }
+      
+      // Update the trajectories (trail) for each link's tip.
       updateTrails() {
         const tips = this.getLinkTipCoordinates();
         for (let i = 0; i < this.numPoles; i++) {
@@ -237,7 +244,6 @@
         const cartY = this.groundY;
         ctx.fillStyle = "#555";
         ctx.fillRect(cartX - this.cartWidth/2, cartY - this.cartHeight, this.cartWidth, this.cartHeight);
-        // Wheels.
         ctx.fillStyle = "#222";
         ctx.beginPath();
         ctx.arc(cartX - this.cartWidth/3, cartY, 10, 0, 2 * Math.PI);
@@ -252,26 +258,25 @@
           const linkLengthPx = this.L * this.scale;
           const endX = baseX + linkLengthPx * Math.sin(theta);
           const endY = baseY - linkLengthPx * Math.cos(theta);
-          ctx.strokeStyle = "hsl(" + (i * 120) + ", 70%, 50%)";
+          ctx.strokeStyle = "hsl(" + (i * 120) + ",70%,50%)";
           ctx.lineWidth = 6;
           ctx.beginPath();
           ctx.moveTo(baseX, baseY);
           ctx.lineTo(endX, endY);
           ctx.stroke();
-          // Draw joint
-          ctx.fillStyle = "hsl(" + (i * 120) + ", 70%, 50%)";
+          ctx.fillStyle = "hsl(" + (i * 120) + ",70%,50%)";
           ctx.beginPath();
-          ctx.arc(baseX, baseY, 6, 0, 2 * Math.PI);
+          ctx.arc(baseX, baseY, 6, 0, 2*Math.PI);
           ctx.fill();
           baseX = endX;
           baseY = endY;
         }
         
-        // Draw trails for each link.
+        // Draw trajectory trails for each link.
         for (let i = 0; i < this.numPoles; i++) {
           const trail = this.trails[i];
           if (trail.length > 1) {
-            ctx.strokeStyle = "rgba(0, 0, 0, 0.3)";  // semi-transparent black
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.3)";
             ctx.lineWidth = 2;
             ctx.beginPath();
             ctx.moveTo(trail[0].x, trail[0].y);
@@ -288,8 +293,8 @@
      * PPOAgent Class (Self-Training via TensorFlow.js)
      *
      * Implements an actor–critic model using PPO.
-     * The actor outputs a continuous force and the critic
-     * estimates state value.
+     * The actor outputs a continuous force, and the critic
+     * estimates the state value.
      *******************************************************/
     class PPOAgent {
       constructor(obs_dim, action_dim, hiddenSizes = [64, 64]) {
@@ -302,7 +307,6 @@
         this.actorLearningRate = 3e-4;
         this.criticLearningRate = 1e-3;
         
-        // Build networks.
         this.actor = this.buildActor(obs_dim, action_dim, hiddenSizes);
         this.actorLogStd = tf.variable(tf.fill([action_dim], -0.5));
         this.critic = this.buildCritic(obs_dim, hiddenSizes);
@@ -422,12 +426,12 @@
     const canvas = document.getElementById("simulationCanvas");
     const statusDiv = document.getElementById("status");
     
-    let simulator;  // instance of ChainPoleSimulator
-    let agent;      // PPOAgent instance
+    let simulator;  // Instance of ChainPoleSimulator.
+    let agent;      // PPOAgent instance.
     let obs_dim;
     const action_dim = 1;
     
-    // Experience buffers (per episode)
+    // Experience buffers (collected over an episode)
     let bufferObservations = [];
     let bufferActions = [];
     let bufferRewards = [];
@@ -440,7 +444,6 @@
       simulator = new ChainPoleSimulator(canvas, numPoles);
       obs_dim = 2 + 2 * simulator.numPoles;
       agent = new PPOAgent(obs_dim, action_dim);
-      // Clear experience buffers.
       bufferObservations = [];
       bufferActions = [];
       bufferRewards = [];
@@ -455,12 +458,12 @@
     /*******************************************************
      * Simulation & Training Loop
      *
-     * The physics & training updates run via setInterval
-     * (every ~20ms) while rendering uses requestAnimationFrame.
-     * In this version, when a termination (e.g. pole touches ground)
-     * is detected, the collected episode experience is immediately
-     * used to train the agent, the buffers are cleared, and the
-     * episode is restarted.
+     * The physics & training updates run via setInterval (every ~20ms)
+     * while rendering occurs with requestAnimationFrame.
+     * This loop collects experience until a termination condition
+     * (i.e. any link's tip touches near ground) is met. At that point,
+     * the episode's experience is used for a training update, buffers
+     * are cleared, and the episode is restarted.
      *******************************************************/
     let lastSimTime = performance.now();
     
@@ -469,16 +472,15 @@
       const elapsed = now - lastSimTime;
       lastSimTime = now;
       
-      // Get current state and decide an action.
       const state = Array.from(simulator.state);
       const { action, logProb, value } = agent.getAction(state);
-      const force = action[0];  // single continuous control
+      const force = action[0];
       
-      // Update the simulation.
       simulator.update(force, elapsed);
       
-      // Use constant reward per update.
+      // Use constant reward per simulation update.
       const reward = 1;
+      // Check termination using the updated isTerminal() condition.
       const done = simulator.isTerminal() ? 1 : 0;
       
       bufferObservations.push(state);
@@ -488,7 +490,7 @@
       bufferLogProbs.push(logProb);
       bufferValues.push(value);
       
-      // If episode is terminated, do a training update for this episode.
+      // If termination is detected, perform a training update and reset.
       if (done === 1) {
         if (bufferObservations.length > 0) {
           const gae = agent.computeGAE(bufferRewards, bufferValues, bufferDones);
@@ -507,14 +509,12 @@
                  logpOldTensor.dispose();
                });
         }
-        // Clear experience buffers.
         bufferObservations = [];
         bufferActions = [];
         bufferRewards = [];
         bufferDones = [];
         bufferLogProbs = [];
         bufferValues = [];
-        // Restart the episode.
         simulator.reset();
       }
       
@@ -530,4 +530,3 @@
 </body>
 </html>
 
-</html>
