@@ -1,4 +1,4 @@
-
+<!-- Include the JavaScript code -->
 <script>
   /******************************************************
    * Global Simulation, RL, and Rendering Variables
@@ -37,13 +37,13 @@
   let rewards = [];
   let episodeReward = 0, episodeCount = 0;
   
-  // 2D Canvas context variables.
+  // 2D Canvas context.
   let canvas, ctx;
   
   // TensorFlow.js models and optimizer.
   let actorModel, criticModel, optimizer;
   
-  // Epsilon for epsilon-greedy exploration.
+  // Epsilon for epsilon‑greedy exploration.
   let epsilon = 1.0;
   const epsilonDecay = 0.995;
   const minEpsilon = 0.1;
@@ -83,7 +83,7 @@
   setupActorCriticModels();
   
   /******************************************************
-   * Action Selection: Epsilon-Greedy
+   * Action Selection: Epsilon‑Greedy
    ******************************************************/
   function chooseAction(state) {
     if (Math.random() < epsilon) {
@@ -187,12 +187,11 @@
    * 2D Canvas Rendering Functions
    ******************************************************/
   function renderScene() {
-    // Clear the canvas.
+    // Clear canvas.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    // Optional: fill with background color.
     ctx.fillStyle = "#e6e6e6";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+    
     // Draw ground.
     const groundY = canvas.height/2 + offsetY;
     ctx.strokeStyle = "rgb(102, 102, 102)";
@@ -205,28 +204,24 @@
     // Determine cart position.
     const cartX = canvas.width/2 + x * scaleFactor;
     const cartY = canvas.height/2 + offsetY;
-
-    // Draw cart as a rectangle.
+    
+    // Draw cart.
     ctx.fillStyle = "black";
     ctx.fillRect(cartX - 25, cartY - 10, 50, 20);
-
+    
     const L = poleLength * scaleFactor;
-
+    
     if (simulationType === "1-pole") {
-      // Compute pole tip position.
       const tipX = cartX + Math.sin(theta) * L;
       const tipY = cartY - Math.cos(theta) * L;
-      // Draw pole.
       ctx.strokeStyle = "red";
       ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(cartX, cartY);
       ctx.lineTo(tipX, tipY);
       ctx.stroke();
-      // Record trajectory.
       trajectory.push({ x: tipX, y: tipY });
     } else if (simulationType === "2-pole") {
-      // Compute first pole’s tip.
       const tip1X = cartX + Math.sin(theta1) * L;
       const tip1Y = cartY - Math.cos(theta1) * L;
       ctx.strokeStyle = "red";
@@ -235,7 +230,6 @@
       ctx.moveTo(cartX, cartY);
       ctx.lineTo(tip1X, tip1Y);
       ctx.stroke();
-      // Second pole: position relative to first.
       const tip2X = tip1X + Math.sin(theta1 + theta2) * L;
       const tip2Y = tip1Y - Math.cos(theta1 + theta2) * L;
       ctx.strokeStyle = "green";
@@ -244,16 +238,13 @@
       ctx.moveTo(tip1X, tip1Y);
       ctx.lineTo(tip2X, tip2Y);
       ctx.stroke();
-      // Record trajectory of the second pole tip.
       trajectory.push({ x: tip2X, y: tip2Y });
     }
-
-    // Limit trajectory length.
+    
     if (trajectory.length > 500) trajectory.shift();
-
-    // Draw trajectory.
+    
     if (trajectory.length > 1) {
-      ctx.strokeStyle = "rgba(0,0,255,0.6)";
+      ctx.strokeStyle = "rgba(0, 0, 255, 0.6)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(trajectory[0].x, trajectory[0].y);
@@ -341,7 +332,6 @@
     actions = [];
     rewards = [];
     episodeReward = 0;
-    // Rebuild the actor-critic models for the new state dimension.
     setupActorCriticModels();
   });
   
@@ -426,7 +416,6 @@
         episodeCount++;
         console.log("Episode:", episodeCount, "Total reward:", episodeReward);
         trainActorCriticModel();
-        // Decay epsilon after each failed episode.
         epsilon = Math.max(minEpsilon, epsilon * epsilonDecay);
         resetSimulation();
         states = [];
