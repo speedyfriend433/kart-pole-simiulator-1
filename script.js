@@ -1,4 +1,3 @@
-<!-- Simulation and UI Script -->
 <script>
   /******************************************************
    * Global Simulation, RL, and Rendering Variables
