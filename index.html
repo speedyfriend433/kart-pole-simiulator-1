@@ -2,36 +2,57 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Triple-Pole Self Training Simulation</title>
+  <title>Multi-Pole Self-Training Simulation</title>
   <!-- Load TensorFlow.js -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
   <style>
     body {
       margin: 0;
-      overflow: hidden;
       background: #222;
+      color: #ddd;
+      font-family: monospace;
+    }
+    #configPanel {
+      padding: 10px;
+      text-align: center;
+      background: #333;
+    }
+    #configPanel label,
+    #configPanel select,
+    #configPanel button {
+      font-size: 16px;
+      margin: 0 5px;
     }
     canvas {
       background: #eee;
       display: block;
-      margin: auto;
+      margin: 10px auto;
     }
     #status {
-      color: #ddd;
       text-align: center;
-      font-family: monospace;
-      margin-top: 10px;
+      margin-top: 5px;
     }
   </style>
 </head>
 <body>
+  <!-- Configuration panel allowing selection of number of poles -->
+  <div id="configPanel">
+    <label for="numPolesSelect">Select Number of Poles:</label>
+    <select id="numPolesSelect">
+      <option value="1">1 Pole</option>
+      <option value="2">2 Poles</option>
+      <option value="3" selected>3 Poles</option>
+    </select>
+    <button id="applyConfig">Apply Configuration</button>
+  </div>
+  
   <canvas id="simulationCanvas" width="800" height="600"></canvas>
-  <div id="status">Self-training simulation initializing...</div>
+  <div id="status">Initializing self-training simulation...</div>
 
   <script>
-    /**********************************************************
+    /*******************************************************
      * Utility Vector Math Functions
-     **********************************************************/
+     *******************************************************/
     function vectorAdd(v1, v2) {
       return v1.map((val, i) => val + v2[i]);
     }
@@ -46,52 +67,61 @@
       return result;
     }
 
-    /**********************************************************
-     * TriplePoleSimulator Class
-     * 
-     * Implements the simulation of a cart with three poles.
-     * Uses an RK4 integrator for improved numerical accuracy.
-     * State vector: [x, x_dot, theta1, theta1_dot, theta2, theta2_dot, theta3, theta3_dot]
-     **********************************************************/
-    class TriplePoleSimulator {
-      constructor(canvas) {
+    /*******************************************************
+     * MultiPoleSimulator Class
+     *
+     * This class simulates a cart with a configurable number
+     * (1 – 3) poles using an RK4 integrator for accurate dynamics.
+     *
+     * The state vector is:
+     *   [ x, x_dot, theta_1, theta_1_dot, ... , theta_n, theta_n_dot ]
+     *******************************************************/
+    class MultiPoleSimulator {
+      constructor(canvas, numPoles = 3) {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
+        this.numPoles = numPoles;
 
         // Physics parameters
-        this.gravity = 9.8;      // [m/s²]
-        this.dt = 0.02;          // time step in seconds
-        this.massCart = 1.0;     
-        this.massPole = 0.1;     
-        this.length = 1.0;       // half–length (to center-of-mass)
-        this.numPoles = 3;
-        
-        // Initialize state vector: 2+2*numPoles (x, x_dot, theta_i, theta_i_dot)
+        this.gravity = 9.8;              // in m/s²
+        this.dt = 0.02;                  // simulation time step (sec)
+        this.massCart = 1.0;
+        this.massPole = 0.1;
+        this.length = 1.0;               // half–length of a pole (to center-of-mass)
+
+        // Initialize state: [x, x_dot, theta_1, theta_1_dot, …]
         this.state = new Float32Array(2 + 2 * this.numPoles);
         this.reset();
 
-        // Termination thresholds:
+        // Termination thresholds
         this.xThreshold = 2.4;
-        this.thetaThreshold = 15 * Math.PI / 180; // 15°
+        this.thetaThreshold = 15 * Math.PI / 180; // 15 degrees in radians
 
         // Graphics parameters
-        this.scale = 100;  // pixels per meter
+        this.scale = 100;                // pixels per meter
         this.cartWidth = 0.8 * this.scale;
         this.cartHeight = 0.4 * this.scale;
-        this.groundY = canvas.height - 100; // y-coordinate for ground
+        this.groundY = this.canvas.height - 100;
 
-        // Pole drawing offsets and colors
-        this.poleOffsets = [-20, 0, 20];
+        // Compute poleOffsets based on number of poles.
+        if (this.numPoles === 1) {
+          this.poleOffsets = [0];
+        } else if (this.numPoles === 2) {
+          this.poleOffsets = [-20, 20];
+        } else { // default to 3 poles
+          this.poleOffsets = [-20, 0, 20];
+        }
         this.poleColors = ["red", "green", "blue"];
       }
 
       reset() {
-        // Reset position and velocity with small random noise.
-        this.state[0] = 0;  // x
-        this.state[1] = 0;  // x_dot
+        // Reset cart position and velocity.
+        this.state[0] = 0;
+        this.state[1] = 0;
+        // For each pole, add a small randomized perturbation.
         for (let i = 0; i < this.numPoles; i++) {
-          this.state[2 + 2 * i] = (Math.random() - 0.5) * 0.1;     // theta
-          this.state[3 + 2 * i] = (Math.random() - 0.5) * 0.1;     // theta_dot
+          this.state[2 + 2 * i] = (Math.random() - 0.5) * 0.2;   // theta (radians)
+          this.state[3 + 2 * i] = (Math.random() - 0.5) * 0.2;   // theta_dot
         }
       }
 
@@ -108,10 +138,11 @@
         const x = state[0], x_dot = state[1];
         derivatives[0] = x_dot;
         const totalMass = this.massCart + this.numPoles * this.massPole;
+        // Simplified cart acceleration (no friction/coupling)
         const cartAcc = force / totalMass;
         derivatives[1] = cartAcc;
 
-        // For each pole:
+        // For each pole compute angular velocity and acceleration:
         for (let i = 0; i < this.numPoles; i++) {
           const theta = state[2 + 2 * i];
           const theta_dot = state[3 + 2 * i];
@@ -140,7 +171,6 @@
       }
 
       update(force, elapsedTime) {
-        // Compute number of simulation steps to perform based on elapsed time.
         const steps = Math.floor(elapsedTime / (this.dt * 1000));
         for (let i = 0; i < steps; i++) {
           this.rk4Step(force);
@@ -162,22 +192,20 @@
         ctx.lineTo(this.canvas.width, this.groundY + 10);
         ctx.stroke();
 
-        // Map cart’s x to canvas coordinates.
+        // Map cart’s x position (meters) to canvas pixel position.
         const cartX = this.canvas.width / 2 + this.state[0] * this.scale;
         const cartY = this.groundY;
-
-        // Draw cart rectangle.
+        // Draw the cart as a rectangle.
         ctx.fillStyle = "#555";
-        ctx.fillRect(cartX - this.cartWidth / 2, cartY - this.cartHeight, this.cartWidth, this.cartHeight);
-
+        ctx.fillRect(cartX - this.cartWidth/2, cartY - this.cartHeight, this.cartWidth, this.cartHeight);
         // Draw cart wheels.
         ctx.fillStyle = "#222";
         ctx.beginPath();
-        ctx.arc(cartX - this.cartWidth / 3, cartY, 10, 0, 2 * Math.PI);
-        ctx.arc(cartX + this.cartWidth / 3, cartY, 10, 0, 2 * Math.PI);
+        ctx.arc(cartX - this.cartWidth/3, cartY, 10, 0, 2 * Math.PI);
+        ctx.arc(cartX + this.cartWidth/3, cartY, 10, 0, 2 * Math.PI);
         ctx.fill();
 
-        // Pole base is at the top center of the cart.
+        // Draw each pole.
         const poleBaseX = cartX;
         const poleBaseY = cartY - this.cartHeight;
         for (let i = 0; i < this.numPoles; i++) {
@@ -185,16 +213,16 @@
           const poleLengthPx = this.length * this.scale * 2;
           const baseX = poleBaseX + this.poleOffsets[i];
           const baseY = poleBaseY;
-          // Compute pole end using polar coordinate conversion (theta=0 is vertical).
           const endX = baseX + poleLengthPx * Math.sin(theta);
           const endY = baseY - poleLengthPx * Math.cos(theta);
-          ctx.strokeStyle = this.poleColors[i];
+          ctx.strokeStyle = this.poleColors[i % this.poleColors.length];
           ctx.lineWidth = 6;
           ctx.beginPath();
           ctx.moveTo(baseX, baseY);
           ctx.lineTo(endX, endY);
           ctx.stroke();
-          ctx.fillStyle = this.poleColors[i];
+          // Draw joint at the base.
+          ctx.fillStyle = this.poleColors[i % this.poleColors.length];
           ctx.beginPath();
           ctx.arc(baseX, baseY, 6, 0, 2 * Math.PI);
           ctx.fill();
@@ -202,14 +230,14 @@
       }
     }
 
-    /**********************************************************
+    /*******************************************************
      * PPOAgent Class
-     * 
-     * Implements an actor–critic model whose actor uses a
-     * trainable log–standard deviation. The agent uses PPO’s
-     * clipped surrogate objective and Generalized Advantage
-     * Estimation (GAE) for training.
-     **********************************************************/
+     *
+     * Defines an actor–critic agent that implements PPO with
+     * a clipped surrogate objective and GAE. The actor outputs
+     * a continuous action (force) using a Gaussian policy,
+     * with trainable log–standard deviation.
+     *******************************************************/
     class PPOAgent {
       constructor(obs_dim, action_dim, hiddenSizes = [64, 64]) {
         this.obs_dim = obs_dim;
@@ -221,13 +249,11 @@
         this.actorLearningRate = 3e-4;
         this.criticLearningRate = 1e-3;
         
-        // Build models
+        // Build networks.
         this.actor = this.buildActor(obs_dim, action_dim, hiddenSizes);
-        // actorLogStd is a trainable variable (for Gaussian noise)
         this.actorLogStd = tf.variable(tf.fill([action_dim], -0.5));
         this.critic = this.buildCritic(obs_dim, hiddenSizes);
         
-        // Optimizers
         this.actorOptimizer = tf.train.adam(this.actorLearningRate);
         this.criticOptimizer = tf.train.adam(this.criticLearningRate);
       }
@@ -238,7 +264,7 @@
         for (let i = 1; i < hiddenSizes.length; i++) {
           model.add(tf.layers.dense({ units: hiddenSizes[i], activation: 'tanh' }));
         }
-        model.add(tf.layers.dense({ units: outputDim, activation: null }));
+        model.add(tf.layers.dense({ units: outputDim }));
         return model;
       }
       
@@ -248,29 +274,26 @@
         for (let i = 1; i < hiddenSizes.length; i++) {
           model.add(tf.layers.dense({ units: hiddenSizes[i], activation: 'tanh' }));
         }
-        model.add(tf.layers.dense({ units: 1, activation: null }));
+        model.add(tf.layers.dense({ units: 1 }));
         return model;
       }
       
       getAction(state) {
         return tf.tidy(() => {
-          // Prepare observation tensor.
           const obs = tf.tensor2d(state, [1, this.obs_dim]);
           const mu = this.actor.predict(obs);
           const std = tf.exp(this.actorLogStd);
           const noise = tf.randomNormal(mu.shape);
           const action = mu.add(std.mul(noise));
-          // Compute log probability using the Gaussian formula:
-          const logProb = tf.mul(-0.5,
-                          tf.add(tf.square(noise),
-                          tf.add(tf.mul(2, this.actorLogStd),
-                                 tf.log(tf.scalar(2 * Math.PI)))))
-                          .sub(this.actorLogStd);
-          const sumLogProb = tf.sum(logProb, 1);
+          // Log probability computation for a Gaussian.
+          let logProb = tf.mul(-0.5, tf.add(tf.square(noise),
+                            tf.add(tf.mul(2, this.actorLogStd),
+                                   tf.log(tf.scalar(2 * Math.PI)))));
+          logProb = tf.sum(logProb, 1);
           const value = this.critic.predict(obs);
           return {
-            action: action.dataSync(), // array; we use index [0] below
-            logProb: sumLogProb.dataSync()[0],
+            action: action.dataSync(), // action is an array; use element 0 for our 1-dim control.
+            logProb: logProb.dataSync()[0],
             value: value.dataSync()[0]
           };
         });
@@ -281,19 +304,17 @@
           const mu = this.actor.apply(obsBatch);
           const std = tf.exp(this.actorLogStd);
           const actionDiff = tf.div(tf.sub(actBatch, mu), std.add(1e-8));
-          let logp = tf.mul(-0.5, tf.add(
-                        tf.square(actionDiff),
-                        tf.add(tf.mul(2, this.actorLogStd),
-                               tf.log(tf.scalar(2 * Math.PI)))
-                      ));
+          let logp = tf.mul(-0.5, tf.add(tf.square(actionDiff),
+                            tf.add(tf.mul(2, this.actorLogStd),
+                                   tf.log(tf.scalar(2 * Math.PI)))));
           logp = tf.sum(logp, 1);
-
+          
           const ratio = tf.exp(tf.sub(logp, logpOldBatch));
           const clipAdv1 = ratio.mul(advBatch);
           const clipAdv2 = tf.clipByValue(ratio, 1 - this.clipRatio, 1 + this.clipRatio).mul(advBatch);
           const actorLoss = tf.neg(tf.mean(tf.minimum(clipAdv1, clipAdv2)));
           
-          // Entropy bonus encourages exploration.
+          // Entropy bonus.
           const entropy = tf.mean(tf.sum(tf.add(this.actorLogStd, tf.scalar(0.5 * Math.log(2 * Math.PI * Math.E))), 1));
           const totalActorLoss = actorLoss.sub(this.entropyCoef * entropy);
           
@@ -315,13 +336,10 @@
             const advBatch = tf.gather(advantages, batchIndices);
             const retBatch = tf.gather(returns, batchIndices);
             const logpOldBatch = tf.gather(logpOld, batchIndices);
-            
-            // Update actor.
             await this.actorOptimizer.minimize(() => {
               const losses = this.computeLosses(obsBatch, actBatch, advBatch, retBatch, logpOldBatch);
               return losses.totalActorLoss;
             });
-            // Update critic.
             await this.criticOptimizer.minimize(() => {
               const losses = this.computeLosses(obsBatch, actBatch, advBatch, retBatch, logpOldBatch);
               return losses.criticLoss;
@@ -342,7 +360,6 @@
           adv[t] = lastgaelam;
         }
         const returns = adv.map((a, idx) => a + values[idx]);
-        // Normalize advantages.
         const mean = adv.reduce((a, b) => a + b, 0) / adv.length;
         const std = Math.sqrt(adv.map(a => (a - mean) ** 2).reduce((a, b) => a + b, 0) / adv.length);
         adv = adv.map(a => (a - mean) / (std + 1e-8));
@@ -350,57 +367,79 @@
       }
     }
 
-    /**********************************************************
-     * Global Setup and Training Integration
-     **********************************************************/
+    /*******************************************************
+     * Global Setup and Reinitialization Function
+     *******************************************************/
     const canvas = document.getElementById("simulationCanvas");
     const statusDiv = document.getElementById("status");
-    const simulator = new TriplePoleSimulator(canvas);
-    const obs_dim = 2 + 2 * simulator.numPoles; // 8 dimensions
-    const action_dim = 1;
-    const agent = new PPOAgent(obs_dim, action_dim);
 
-    // Experience buffers
+    let simulator;          // Instance of MultiPoleSimulator.
+    let agent;              // PPOAgent instance.
+    let obs_dim;            // Dimension depends on number of poles.
+    const action_dim = 1;
     let bufferObservations = [];
     let bufferActions = [];
     let bufferRewards = [];
     let bufferDones = [];
     let bufferLogProbs = [];
     let bufferValues = [];
-    const batchSizeThreshold = 2048; // timesteps per training update
+    const batchSizeThreshold = 2048; // timesteps before training update.
 
+    function initSimulation() {
+      // Read configuration from the dropdown.
+      const numPoles = parseInt(document.getElementById("numPolesSelect").value);
+      // Reinitialize the simulator and agent with the new configuration.
+      simulator = new MultiPoleSimulator(canvas, numPoles);
+      obs_dim = 2 + 2 * simulator.numPoles;
+      agent = new PPOAgent(obs_dim, action_dim);
+      // Clear experience buffers.
+      bufferObservations = [];
+      bufferActions = [];
+      bufferRewards = [];
+      bufferDones = [];
+      bufferLogProbs = [];
+      bufferValues = [];
+      statusDiv.textContent = `Configuration applied: ${numPoles} Pole${numPoles > 1 ? 's' : ''}`;
+    }
+
+    // Initial simulation setup.
+    initSimulation();
+
+    // Apply configuration on button click.
+    document.getElementById("applyConfig").addEventListener("click", initSimulation);
+
+    /*******************************************************
+     * Main Simulation and Training Loop
+     *******************************************************/
     let lastTime = performance.now();
 
     function simulateAndTrain(currentTime) {
       const elapsedTime = currentTime - lastTime;
       lastTime = currentTime;
-
-      // Get current state and compute action from the agent:
+      // Get current state and select an action.
       const state = Array.from(simulator.state);
       const { action, logProb, value } = agent.getAction(state);
-      const force = action[0];  // single-element continuous control
-
-      // Update simulation using the computed force:
+      const force = action[0];  // single continuous control
       simulator.update(force, elapsedTime);
-      // Use a reward of 1 per timestep.
+      
+      // Assign a reward of 1 per simulation step.
       const reward = 1;
       const done = simulator.isTerminal() ? 1 : 0;
-      if (done === 1) { 
+      if (done === 1) {
         simulator.reset();
       }
-
-      // Store experience for training.
+      
+      // Store experience.
       bufferObservations.push(state);
       bufferActions.push([force]);
       bufferRewards.push(reward);
       bufferDones.push(done);
       bufferLogProbs.push(logProb);
       bufferValues.push(value);
-
-      // Render simulation.
+      
       simulator.render();
 
-      // When enough experience is collected, perform a training update.
+      // Begin training when sufficient data have been gathered.
       if (bufferObservations.length >= batchSizeThreshold) {
         const gae = agent.computeGAE(bufferRewards, bufferValues, bufferDones);
         const obsTensor = tf.tensor2d(bufferObservations, [bufferObservations.length, obs_dim]);
@@ -408,7 +447,7 @@
         const advTensor = tf.tensor1d(gae.advantages);
         const retTensor = tf.tensor1d(gae.returns);
         const logpOldTensor = tf.tensor1d(bufferLogProbs);
-
+        
         agent.update(obsTensor, actTensor, advTensor, retTensor, logpOldTensor)
              .then(() => {
                bufferObservations = [];
@@ -426,10 +465,10 @@
              });
       }
       
-      // Update status text every so often.
-      statusDiv.textContent = `Training Steps Collected: ${bufferObservations.length}`;
+      statusDiv.textContent = `Collected Steps: ${bufferObservations.length} (Obs Dim: ${obs_dim})`;
       requestAnimationFrame(simulateAndTrain);
     }
+
     requestAnimationFrame(simulateAndTrain);
   </script>
 </body>
