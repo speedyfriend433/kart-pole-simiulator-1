@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Chain-Pole Self-Training Simulation with Episode Reset & Trajectories (Ground Contact Termination)</title>
+  <title>Chain-Pole Self-Training Simulation (Ground Contact Termination)</title>
   <!-- Load TensorFlow.js -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
   <style>
@@ -35,7 +35,7 @@
   </style>
 </head>
 <body>
-  <!-- Configuration panel: choose how many links (poles) to stack -->
+  <!-- Configuration panel: choose number of stacked poles -->
   <div id="configPanel">
     <label for="numPolesSelect">Select Number of Poles (Stacked):</label>
     <select id="numPolesSelect">
@@ -72,12 +72,10 @@
      *
      * This simulator models a cart with a chain of pendulums
      * (stacked one above the other) using a cascade formulation.
-     * In this version, the termination condition checks the canvas
-     * y-coordinate of each link's tip. If any tip touches or falls
-     * near the ground (defined by the simulator's groundY), the
-     * episode immediately ends, triggering a training update.
+     * Termination is triggered when any link’s tip touches (or gets
+     * very near) the ground (canvas y‐coordinate >= groundY - 10).
      *
-     * The simulation also records a trail (trajectory) for each link's tip.
+     * It also records a trail (trajectory) for each link’s tip.
      *******************************************************/
     class ChainPoleSimulator {
       constructor(canvas, numPoles = 3) {
@@ -89,25 +87,25 @@
         this.gravity = 9.8;       // m/s²
         this.dt = 0.02;           // time step in seconds
         this.massCart = 1.0;      // mass of the cart
-        this.massPole = 0.1;      // mass for each link (for inertia estimation)
+        this.massPole = 0.1;      // mass for each link
         this.L = 1.0;             // link length in meters
         
-        // Our state is [x, x_dot, theta1, theta1_dot, theta2, theta2_dot, ...]
+        // State: [x, x_dot, theta1, theta1_dot, theta2, theta2_dot, ...]
         this.state = new Float32Array(2 + 2 * this.numPoles);
         this.reset();
         
         // Termination thresholds:
         this.xThreshold = 2.4;
-        // Instead of using an angular threshold, we terminate when a link touches ground.
+        // Ground contact termination: when any link tip's y is near ground.
         
-        // Graphics parameters
+        // Graphics parameters:
         this.scale = 100;         // pixels per meter
         this.cartWidth = 0.8 * this.scale;
         this.cartHeight = 0.4 * this.scale;
-        this.groundY = this.canvas.height - 100;  // Ground level
+        this.groundY = this.canvas.height - 100;
         
-        // For trajectory tracking, maintain an array of trails for each link.
-        this.maxTrailLength = 100;  // Maximum number of points per trail
+        // For trajectory tracking, maintain a trail per link.
+        this.maxTrailLength = 100;  // max points per trail
         this.initializeTrails();
       }
       
@@ -119,34 +117,29 @@
       }
       
       reset() {
-        // Reset cart position and velocity.
-        this.state[0] = 0;  // x position.
-        this.state[1] = 0;  // x velocity.
-        // Reset each link with small noise so that angles are nearly vertical.
+        // Reset cart state.
+        this.state[0] = 0;  // x position
+        this.state[1] = 0;  // x velocity
+        // For each link, start nearly vertical with a little noise.
         for (let i = 0; i < this.numPoles; i++) {
-          this.state[2 + 2*i] = (Math.random() - 0.5) * 0.05;  // theta (radians)
-          this.state[3 + 2*i] = (Math.random() - 0.5) * 0.05;  // angular velocity.
+          this.state[2 + 2*i] = (Math.random() - 0.5) * 0.05;
+          this.state[3 + 2*i] = (Math.random() - 0.5) * 0.05;
         }
         this.initializeTrails();
       }
       
-      // Termination occurs if:
-      //   1. The cart leaves bounds
-      //   2. OR any link's tip position is at or below a threshold near the ground.
+      // Termination: if the cart goes out of bounds or any link tip touches near the ground.
       isTerminal() {
         if (Math.abs(this.state[0]) > this.xThreshold) return true;
         const tips = this.getLinkTipCoordinates();
         for (let tip of tips) {
-          // If a tip's y-coordinate is greater than (i.e. lower than) ground level minus a small margin,
-          // consider that as having touched the ground.
           if (tip.y >= this.groundY - 10) return true;
         }
         return false;
       }
       
-      // Compute the tip positions (in canvas pixels) for each link in the chain.
+      // Returns an array of tip coordinates (in canvas pixels) for each link.
       getLinkTipCoordinates() {
-        // Start from the cart's top center.
         const cartX = this.canvas.width / 2 + this.state[0] * this.scale;
         const cartY = this.groundY;
         let baseX = cartX;
@@ -157,24 +150,24 @@
           const linkLengthPx = this.L * this.scale;
           const endX = baseX + linkLengthPx * Math.sin(theta);
           const endY = baseY - linkLengthPx * Math.cos(theta);
-          tips.push({x: endX, y: endY});
+          tips.push({ x: endX, y: endY });
           baseX = endX;
           baseY = endY;
         }
         return tips;
       }
       
-      // Compute the derivatives for chain dynamics.
+      // Compute the derivatives according to cascade dynamics.
       computeDerivatives(state, force) {
         const deriv = new Float32Array(state.length);
-        // Cart dynamics:
+        // Cart dynamics.
         deriv[0] = state[1];
         const totalMass = this.massCart + this.numPoles * this.massPole;
         const x_ddot = force / totalMass;
         deriv[1] = x_ddot;
         
-        // Cascading dynamics for each link.
-        let a_eff = x_ddot;  // Effective acceleration starts as the cart's acceleration.
+        // For the chain, pass effective acceleration a_eff.
+        let a_eff = x_ddot;
         for (let i = 0; i < this.numPoles; i++) {
           const idx = 2 + 2*i;
           const theta = state[idx];
@@ -183,12 +176,13 @@
           const theta_ddot = - (this.gravity / this.L) * Math.sin(theta)
                              - (a_eff / this.L) * Math.cos(theta);
           deriv[idx+1] = theta_ddot;
+          // Update the effective acceleration passed to the next link.
           a_eff = a_eff + this.L * theta_ddot * Math.cos(theta) - this.L * theta_dot * theta_dot * Math.sin(theta);
         }
         return deriv;
       }
       
-      // Perform one RK4 integration step.
+      // RK4 integration step.
       rk4Step(force) {
         const dt = this.dt;
         const s = this.state;
@@ -203,20 +197,17 @@
         this.state = vectorAdd(s, incr);
       }
       
-      // Update simulation over elapsed time (in milliseconds) and update the trails.
+      // Update simulation over elapsed time in milliseconds.
       update(force, elapsedTime) {
         const steps = Math.floor(elapsedTime / (this.dt * 1000));
         for (let i = 0; i < steps; i++) {
           this.rk4Step(force);
           this.updateTrails();
-          if (this.isTerminal()) {
-            // When termination is reached, break out so that the reset can occur.
-            break;
-          }
+          if (this.isTerminal()) break;
         }
       }
       
-      // Update the trajectories (trail) for each link's tip.
+      // Append current tip positions to each trail.
       updateTrails() {
         const tips = this.getLinkTipCoordinates();
         for (let i = 0; i < this.numPoles; i++) {
@@ -250,7 +241,7 @@
         ctx.arc(cartX + this.cartWidth/3, cartY, 10, 0, 2 * Math.PI);
         ctx.fill();
         
-        // Draw the chain of links.
+        // Draw the chain.
         let baseX = cartX;
         let baseY = cartY - this.cartHeight;
         for (let i = 0; i < this.numPoles; i++) {
@@ -272,7 +263,7 @@
           baseY = endY;
         }
         
-        // Draw trajectory trails for each link.
+        // Draw trails.
         for (let i = 0; i < this.numPoles; i++) {
           const trail = this.trails[i];
           if (trail.length > 1) {
@@ -292,9 +283,7 @@
     /*******************************************************
      * PPOAgent Class (Self-Training via TensorFlow.js)
      *
-     * Implements an actor–critic model using PPO.
-     * The actor outputs a continuous force, and the critic
-     * estimates the state value.
+     * Implements an actor–critic PPO agent.
      *******************************************************/
     class PPOAgent {
       constructor(obs_dim, action_dim, hiddenSizes = [64, 64]) {
@@ -384,11 +373,13 @@
         for (let epoch = 0; epoch < epochs; epoch++) {
           for (let i = 0; i < datasetSize; i += batchSize) {
             const batchIndices = indices.slice(i, i + batchSize);
-            const obsBatch = tf.gather(observations, batchIndices);
-            const actBatch = tf.gather(actions, batchIndices);
-            const advBatch = tf.gather(advantages, batchIndices);
-            const retBatch = tf.gather(returns, batchIndices);
-            const logpOldBatch = tf.gather(logpOld, batchIndices);
+            // Convert indices to tensor (int32) to satisfy tf.gather.
+            const batchIndicesTensor = tf.tensor1d(batchIndices, 'int32');
+            const obsBatch = tf.gather(observations, batchIndicesTensor);
+            const actBatch = tf.gather(actions, batchIndicesTensor);
+            const advBatch = tf.gather(advantages, batchIndicesTensor);
+            const retBatch = tf.gather(returns, batchIndicesTensor);
+            const logpOldBatch = tf.gather(logpOld, batchIndicesTensor);
             await this.actorOptimizer.minimize(() => {
               const losses = this.computeLosses(obsBatch, actBatch, advBatch, retBatch, logpOldBatch);
               return losses.totalActorLoss;
@@ -397,7 +388,12 @@
               const losses = this.computeLosses(obsBatch, actBatch, advBatch, retBatch, logpOldBatch);
               return losses.criticLoss;
             });
-            obsBatch.dispose(); actBatch.dispose(); advBatch.dispose(); retBatch.dispose(); logpOldBatch.dispose();
+            batchIndicesTensor.dispose();
+            obsBatch.dispose();
+            actBatch.dispose();
+            advBatch.dispose();
+            retBatch.dispose();
+            logpOldBatch.dispose();
           }
         }
       }
@@ -458,12 +454,11 @@
     /*******************************************************
      * Simulation & Training Loop
      *
-     * The physics & training updates run via setInterval (every ~20ms)
-     * while rendering occurs with requestAnimationFrame.
-     * This loop collects experience until a termination condition
-     * (i.e. any link's tip touches near ground) is met. At that point,
-     * the episode's experience is used for a training update, buffers
-     * are cleared, and the episode is restarted.
+     * The physics and training updates occur via setInterval (every ~20ms)
+     * while rendering uses requestAnimationFrame.
+     * When termination is detected (i.e. any link tip touches near ground),
+     * the current episode’s experience is used to perform a training update,
+     * then buffers are cleared and the episode restarts.
      *******************************************************/
     let lastSimTime = performance.now();
     
@@ -478,9 +473,8 @@
       
       simulator.update(force, elapsed);
       
-      // Use constant reward per simulation update.
+      // Use a constant reward per update.
       const reward = 1;
-      // Check termination using the updated isTerminal() condition.
       const done = simulator.isTerminal() ? 1 : 0;
       
       bufferObservations.push(state);
@@ -490,7 +484,6 @@
       bufferLogProbs.push(logProb);
       bufferValues.push(value);
       
-      // If termination is detected, perform a training update and reset.
       if (done === 1) {
         if (bufferObservations.length > 0) {
           const gae = agent.computeGAE(bufferRewards, bufferValues, bufferDones);
@@ -529,4 +522,3 @@
   </script>
 </body>
 </html>
-
