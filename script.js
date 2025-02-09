@@ -1,4 +1,4 @@
-<!-- Include the JavaScript code -->
+<!-- Simulation and UI Script -->
 <script>
   /******************************************************
    * Global Simulation, RL, and Rendering Variables
@@ -52,7 +52,8 @@
    * Canvas Initialization
    ******************************************************/
   function initCanvas() {
-    canvas = document.getElementById("canvas");
+    // Now we use the id "glcanvas" (matching the HTML)
+    canvas = document.getElementById("glcanvas");
     ctx = canvas.getContext("2d");
   }
   
@@ -100,7 +101,7 @@
   /******************************************************
    * Simulation Step Functions
    ******************************************************/
-  // 1-pole dynamics.
+  // 1‑pole dynamics.
   function simulateSingleStep(action, dt) {
     const force = action * forceMag;
     const costheta = Math.cos(theta);
@@ -115,7 +116,7 @@
     theta_dot += dt * theta_acc;
   }
   
-  // 2-pole dynamics (simplified/demonstrative).
+  // 2‑pole dynamics (simplified/demonstrative).
   function simulateDoubleStep(action, dt) {
     const force = action * forceMag;
     let m_eff = 2 * massPole;
@@ -187,13 +188,13 @@
    * 2D Canvas Rendering Functions
    ******************************************************/
   function renderScene() {
-    // Clear canvas.
+    // Clear the canvas.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#e6e6e6";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
     // Draw ground.
-    const groundY = canvas.height/2 + offsetY;
+    const groundY = canvas.height / 2 + offsetY;
     ctx.strokeStyle = "rgb(102, 102, 102)";
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -202,8 +203,8 @@
     ctx.stroke();
     
     // Determine cart position.
-    const cartX = canvas.width/2 + x * scaleFactor;
-    const cartY = canvas.height/2 + offsetY;
+    const cartX = canvas.width / 2 + x * scaleFactor;
+    const cartY = canvas.height / 2 + offsetY;
     
     // Draw cart.
     ctx.fillStyle = "black";
@@ -241,7 +242,8 @@
       trajectory.push({ x: tip2X, y: tip2Y });
     }
     
-    if (trajectory.length > 500) trajectory.shift();
+    if (trajectory.length > 500)
+      trajectory.shift();
     
     if (trajectory.length > 1) {
       ctx.strokeStyle = "rgba(0, 0, 255, 0.6)";
@@ -261,10 +263,10 @@
   function checkFailure() {
     const outOfBounds = (Math.abs(x * scaleFactor) > canvas.width / 2);
     if (simulationType === "1-pole") {
-      return (Math.abs(theta) > Math.PI/2 || outOfBounds);
+      return (Math.abs(theta) > Math.PI / 2 || outOfBounds);
     } else if (simulationType === "2-pole") {
-      return (Math.abs(theta1) > Math.PI/2 ||
-              Math.abs(theta1 + theta2) > Math.PI/2 ||
+      return (Math.abs(theta1) > Math.PI / 2 ||
+              Math.abs(theta1 + theta2) > Math.PI / 2 ||
               outOfBounds);
     }
   }
