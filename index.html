@@ -1,67 +1,302 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8">
-    <title>Enhanced Cart-Pole AI Balancer – Multiple Pole Options</title>
-    <!-- TensorFlow.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
-    <style>
-      body, html {
-        margin: 0;
-        padding: 0;
-        overflow: hidden;
-        font-family: sans-serif;
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Triple-Pole Balancing Simulation</title>
+  <!-- Load TensorFlow.js library -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; background: #333; }
+    canvas { background: #eee; display: block; margin: auto; }
+    #status {
+      color: white;
+      text-align: center;
+      font-family: sans-serif;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="simulationCanvas" width="800" height="600"></canvas>
+  <div id="status">Loading model...</div>
+
+  <script>
+    /***************************************
+     * Utility vector math functions
+     ***************************************/
+    // Elementwise addition of two vectors
+    function vectorAdd(v1, v2) {
+      return v1.map((val, i) => val + v2[i]);
+    }
+
+    // Multiply a vector by a scalar
+    function vectorScale(v, scalar) {
+      return v.map(val => val * scalar);
+    }
+
+    // Add several vectors together: result = v1 + v2 + ... + vn
+    function vectorAddMultiple(...vectors) {
+      let result = vectors[0].slice();
+      for (let i = 1; i < vectors.length; i++) {
+        result = result.map((val, j) => val + vectors[i][j]);
       }
-      canvas {
-        display: block;
+      return result;
+    }
+
+    /***************************************
+     * TriplePoleSimulator Class
+     *
+     * Implements the simulation dynamics using RK4
+     * integration. The state vector is:
+     *
+     *   state = [ x, x_dot, theta1, theta1_dot, theta2, theta2_dot, theta3, theta3_dot ]
+     *
+     * The simulation uses a decoupled physics approach:
+     *   - Cart acceleration: a = force / (mass_cart + 3 * mass_pole)
+     *   - Pole angular acceleration: 
+     *         theta_ddot = - (g/length)*sin(theta) - (a/length)*cos(theta)
+     *
+     ***************************************/
+    class TriplePoleSimulator {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+
+        // Physics parameters
+        this.gravity = 9.8;         // gravitational acceleration [m/s^2]
+        this.dt = 0.02;             // simulation time-step [s]
+        this.massCart = 1.0;        // mass of the cart [kg]
+        this.massPole = 0.1;        // mass of each pole [kg]
+        this.length = 1.0;          // half-length of the pole [m] (center-of-mass)
+        this.numPoles = 3;          // number of poles
+
+        // Initial state: [x, x_dot, theta1, theta1_dot, theta2, theta2_dot, theta3, theta3_dot]
+        // Here x is in meters relative to center and theta in radians.
+        this.state = new Float32Array(2 + 2*this.numPoles);
+        this.reset();
+
+        // Limits for termination (consistent with training constraints)
+        this.xThreshold = 2.4;
+        this.thetaThreshold = 15 * Math.PI / 180;  // 15 degrees in radians
+
+        // Graphics parameters
+        this.scale = 100;           // pixels per meter
+        this.cartWidth = 0.8 * this.scale;    // cart width in pixels
+        this.cartHeight = 0.4 * this.scale;   // cart height in pixels
+        this.groundY = canvas.height - 100;  // vertical position for cart on canvas
+
+        // Pole drawing offsets (to separate the poles visually at the cart top)
+        this.poleOffsets = [ -20, 0, 20 ]; // horizontal offsets in pixels
+        this.poleColors = [ "red", "green", "blue" ];
       }
-      #controlPanel {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        background: rgba(255, 255, 255, 0.9);
-        padding: 10px;
-        border-radius: 5px;
-        z-index: 100;
+
+      // Reset the simulation state with small random noise near zero.
+      reset() {
+        this.state[0] = 0;   // x position
+        this.state[1] = 0;   // x velocity
+        for (let i = 0; i < this.numPoles; i++) {
+          // small angle noise: theta and angular velocity
+          this.state[2 + 2*i] = (Math.random()-0.5) * 0.1;   
+          this.state[3 + 2*i] = (Math.random()-0.5) * 0.1;
+        }
       }
-      #controlPanel label, #controlPanel button, #controlPanel select {
-        font-size: 13px;
+
+      // Check termination conditions: cart or any pole exceeds threshold.
+      isTerminal() {
+        if (Math.abs(this.state[0]) > this.xThreshold) {
+          return true;
+        }
+        for (let i = 0; i < this.numPoles; i++) {
+          if (Math.abs(this.state[2 + 2*i]) > this.thetaThreshold) {
+            return true;
+          }
+        }
+        return false;
       }
-      #metrics {
-        margin-top: 10px;
-        font-size: 12px;
+
+      // Compute the time derivatives of the state given current state and applied force.
+      computeDerivatives(state, force) {
+        const derivatives = new Float32Array(state.length);
+        // Unpack state components:
+        const x = state[0],
+              x_dot = state[1];
+        derivatives[0] = x_dot;
+
+        // Total mass system: cart + poles
+        const totalMass = this.massCart + this.numPoles * this.massPole;
+        // Compute cart acceleration (simplified; no friction or coupling terms)
+        const cartAcc = force / totalMass;
+        derivatives[1] = cartAcc;
+
+        // For each pole: theta' = angular velocity, and angular acceleration.
+        // Using decoupled dynamics approximation.
+        for (let i = 0; i < this.numPoles; i++) {
+          const theta = state[2 + 2*i];
+          const theta_dot = state[3 + 2*i];
+          derivatives[2 + 2*i] = theta_dot;
+          derivatives[3 + 2*i] = - (this.gravity / this.length) * Math.sin(theta)
+                                    - (cartAcc / this.length) * Math.cos(theta);
+        }
+        return derivatives;
       }
-    </style>
-  </head>
-  <body>
-    <!-- WebGL canvas -->
-    <canvas id="glcanvas" width="800" height="600"></canvas>
-    <!-- Control Panel -->
-    <div id="controlPanel">
-      <!-- Simulation control buttons -->
-      <button id="toggleSim">Pause Simulation</button>
-      <button id="resetSim">Reset Simulation</button>
-      <button id="toggleRecord">Start Recording</button>
-      <br><br>
-      <!-- Parameter sliders -->
-      <label>Force Magnitude: <span id="forceDisplay">10.0</span></label><br>
-      <input type="range" id="forceSlider" min="1" max="20" step="0.5" value="10">
-      <br>
-      <label>Gravity: <span id="gravityDisplay">9.8</span></label><br>
-      <input type="range" id="gravitySlider" min="0" max="20" step="0.1" value="9.8">
-      <br>
-      <label>Simulation Speed: <span id="speedDisplay">1.0</span></label><br>
-      <input type="range" id="speedSlider" min="0.5" max="2" step="0.1" value="1.0">
-      <br><br>
-      <!-- New: Dropdown to select simulation configuration -->
-      <label>Pole Configuration: </label>
-      <select id="poleConfig">
-        <option value="1-pole">1 Pole</option>
-        <option value="2-pole">2 Poles</option>
-      </select>
-      
-      <!-- Metrics overlay -->
-      <div id="metrics"></div>
-    </div>
+
+      // A single RK4 integration step using current state and applied force.
+      rk4Step(force) {
+        const dt = this.dt;
+        const s = this.state;
+        const k1 = this.computeDerivatives(s, force);
+        const s2 = vectorAdd(s, vectorScale(k1, dt / 2));
+        const k2 = this.computeDerivatives(s2, force);
+        const s3 = vectorAdd(s, vectorScale(k2, dt / 2));
+        const k3 = this.computeDerivatives(s3, force);
+        const s4 = vectorAdd(s, vectorScale(k3, dt));
+        const k4 = this.computeDerivatives(s4, force);
+
+        // Combine the slopes:
+        const incr = vectorScale(vectorAddMultiple(
+          k1,
+          vectorScale(k2, 2),
+          vectorScale(k3, 2),
+          k4
+        ), dt / 6);
+
+        // Update state:
+        this.state = vectorAdd(s, incr);
+      }
+
+      // Simulate for a given elapsed time. If elapsed time exceeds dt,
+      // perform multiple RK4 steps.
+      update(force, elapsedTime) {
+        let steps = Math.floor(elapsedTime / (this.dt * 1000));
+        for (let i = 0; i < steps; i++) {
+          this.rk4Step(force);
+          // Automatically reset if terminal condition is reached.
+          if (this.isTerminal()) {
+            this.reset();
+          }
+        }
+      }
+
+      // Render the cart and poles on the canvas.
+      render() {
+        const ctx = this.ctx;
+        ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+        // Draw ground line:
+        ctx.strokeStyle = "#888";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, this.groundY + 10);
+        ctx.lineTo(this.canvas.width, this.groundY + 10);
+        ctx.stroke();
+
+        // Map cart's x (meters) to canvas position:
+        const cartX = this.canvas.width / 2 + this.state[0] * this.scale;
+        const cartY = this.groundY;  // base vertical position of the cart
+
+        // Draw cart (as a rectangle):
+        ctx.fillStyle = "#555";
+        const cartWidthPx = this.cartWidth;
+        const cartHeightPx = this.cartHeight;
+        ctx.fillRect(cartX - cartWidthPx/2, cartY - cartHeightPx, cartWidthPx, cartHeightPx);
+
+        // Draw wheels for the cart:
+        ctx.fillStyle = "#222";
+        ctx.beginPath();
+        ctx.arc(cartX - cartWidthPx/3, cartY, 10, 0, 2 * Math.PI);
+        ctx.arc(cartX + cartWidthPx/3, cartY, 10, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // The base position for the poles (from top center of the cart)
+        const poleBaseX = cartX;
+        const poleBaseY = cartY - cartHeightPx;
+
+        // For each pole, compute the end position and draw.
+        for (let i = 0; i < this.numPoles; i++) {
+          const theta = this.state[2 + 2*i];
+          // Map pole length from meters to pixels:
+          const poleLengthPx = this.length * this.scale * 2;  // scale factor for visualization
+          // Offset the base of each pole so they do not completely overlap.
+          const baseX = poleBaseX + this.poleOffsets[i];
+          const baseY = poleBaseY;
+          // Compute end point using standard conversion (theta = 0 means vertical upward)
+          const endX = baseX + poleLengthPx * Math.sin(theta);
+          const endY = baseY - poleLengthPx * Math.cos(theta);
+
+          // Draw the pole:
+          ctx.strokeStyle = this.poleColors[i];
+          ctx.lineWidth = 6;
+          ctx.beginPath();
+          ctx.moveTo(baseX, baseY);
+          ctx.lineTo(endX, endY);
+          ctx.stroke();
+
+          // Optionally, draw a joint at the base:
+          ctx.fillStyle = this.poleColors[i];
+          ctx.beginPath();
+          ctx.arc(baseX, baseY, 6, 0, 2*Math.PI);
+          ctx.fill();
+        }
+      }
+    }
+
+    /***************************************
+     * Global variables and model loading
+     ***************************************/
+    const canvas = document.getElementById("simulationCanvas");
+    const statusDiv = document.getElementById("status");
+    const simulator = new TriplePoleSimulator(canvas);
+    let policyModel = null;  // This will hold the loaded TensorFlow.js model
+
+    // Asynchronously load the TensorFlow.js model (assumed to be already converted)
+    async function loadPolicyModel() {
+      try {
+        // Change the URL to the path of your model.json file.
+        policyModel = await tf.loadLayersModel('tfjs_model/model.json');
+        statusDiv.textContent = "Model loaded – simulation running.";
+      } catch (err) {
+        console.error("Failed to load model:", err);
+        statusDiv.textContent = "Model failed to load – using default (zero force) controller.";
+      }
+    }
+    loadPolicyModel();
+
+    /***************************************
+     * Main Animation and Simulation Loop
+     ***************************************/
+    let lastTime = performance.now();
+
+    // The simulation loop calls itself via requestAnimationFrame.
+    function animate(currentTime) {
+      const elapsedTime = currentTime - lastTime;
+      lastTime = currentTime;
+
+      // Determine control force:
+      // If the policy model is loaded, use it to predict the action from the current state.
+      // Otherwise, use a default controller (e.g., zero force).
+      let force = 0;
+      if (policyModel) {
+        // Wrap in tf.tidy to manage memory.
+        tf.tidy(() => {
+          const stateTensor = tf.tensor2d(simulator.state, [1, simulator.state.length]);
+          // The actor model is assumed to output a scalar action.
+          const prediction = policyModel.predict(stateTensor);
+          // Use dataSync() to get the scalar value
+          force = prediction.dataSync()[0];
+        });
+      }
+
+      // Update simulation with computed force.
+      simulator.update(force, elapsedTime);
+
+      // Render the updated simulation.
+      simulator.render();
+
+      // Schedule next animation frame.
+      window.requestAnimationFrame(animate);
+    }
+
+    window.requestAnimationFrame(animate);
+  </script>
 </body>
 </html>
